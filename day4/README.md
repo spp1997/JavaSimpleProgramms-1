@@ -8,3 +8,5 @@ Implementation:
 This code prompts the user to enter an integer.
 It then uses the if-else statement to check the condition number % 2 == 0.
 If the condition is true (remainder is 0), the number is even; otherwise, it is odd.
+
+
