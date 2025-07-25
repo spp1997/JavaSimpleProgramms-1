@@ -1,67 +1,106 @@
-# This workflow uses actions that are not certified by GitHub.
-# They are provided by a third-party and are governed by
-# separate terms of service, privacy policy, and support
-# documentation.
-# This workflow will build a Java project with Gradle and cache/restore any dependencies to improve the workflow execution time
-# For more information see: https://docs.github.com/en/actions/automating-builds-and-tests/building-and-testing-java-with-gradle
-
-name: Java CI with Gradle
+name: Java Practice Code CI
 
 on:
-  push:
-    branches: [ "main" ]
   pull_request:
-    branches: [ "main" ]
+    branches: [ "main" ] # Trigger only on Pull Requests to the main branch
 
 jobs:
-  build:
-
-    runs-on: ubuntu-24.04
+  build-and-run-changed-java-files:
+    runs-on: ubuntu-latest # Using ubuntu-latest as it has JDK pre-installed
     permissions:
-      contents: read
+      contents: read # Needed to checkout code
 
     steps:
-    - uses: actions/checkout@v4
+    - name: Checkout code
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0 # Required to compare against the base branch for changed files
+
     - name: Set up JDK 17
       uses: actions/setup-java@v4
       with:
         java-version: '17'
         distribution: 'temurin'
+        cache: 'maven' # Even if not using Maven/Gradle, this is harmless
 
-    # Configure Gradle for optimal use in GitHub Actions, including caching of downloaded dependencies.
-    # See: https://github.com/gradle/actions/blob/main/setup-gradle/README.md
-    - name: Setup Gradle
-      uses: gradle/actions/setup-gradle@af1da67850ed9a4cedd57bfd976089dd991e2582 # v4.0.0
-
-    - name: Build with Gradle Wrapper
-      run: ./gradlew build
-
-    # NOTE: The Gradle Wrapper is the default and recommended way to run Gradle (https://docs.gradle.org/current/userguide/gradle_wrapper.html).
-    # If your project does not have the Gradle Wrapper configured, you can use the following configuration to run Gradle with a specified version.
-    #
-    # - name: Setup Gradle
-    #   uses: gradle/actions/setup-gradle@af1da67850ed9a4cedd57bfd976089dd991e2582 # v4.0.0
-    #   with:
-    #     gradle-version: '8.9'
-    #
-    # - name: Build with Gradle 8.9
-    #   run: gradle build
-
-  dependency-submission:
-
-    runs-on: ubuntu-24.04
-    permissions:
-      contents: write
-
-    steps:
-    - uses: actions/checkout@v4
-    - name: Set up JDK 17
-      uses: actions/setup-java@v4
+    - name: Get changed Java files
+      id: changed-java-files # Give this step an ID to access its outputs
+      uses: tj-actions/changed-files@v40 # Action to detect changed files in a PR
       with:
-        java-version: '17'
-        distribution: 'temurin'
+        files: | # Filter to only include Java files
+          **/*.java
+        # Optionally, ignore specific paths if needed, e.g., documentation
+        # ignored_files: |
+        #   docs/**
+        #   README.md
 
-    # Generates and submits a dependency graph, enabling Dependabot Alerts for all project dependencies.
-    # See: https://github.com/gradle/actions/blob/main/dependency-submission/README.md
-    - name: Generate and submit dependency graph
-      uses: gradle/actions/dependency-submission@af1da67850ed9a4cedd57bfd976089dd991e2582 # v4.0.0
+    - name: Compile and Run Changed Java Files
+      # This step will only run if there are actual Java files changed
+      if: steps.changed-java-files.outputs.modified_files != '' || steps.changed-java-files.outputs.added_files != ''
+      run: |
+        echo "Found modified files: ${{ steps.changed-java-files.outputs.modified_files }}"
+        echo "Found added files: ${{ steps.changed-java-files.outputs.added_files }}"
+
+        # Combine added and modified files lists
+        CHANGED_JAVA_FILES=""
+        if [ -n "${{ steps.changed-java-files.outputs.modified_files }}" ]; then
+            CHANGED_JAVA_FILES="${{ steps.changed-java-files.outputs.modified_files }}"
+        fi
+        if [ -n "${{ steps.changed-java-files.outputs.added_files }}" ]; then
+            if [ -n "$CHANGED_JAVA_FILES" ]; then
+                CHANGED_JAVA_FILES="$CHANGED_JAVA_FILES,${{ steps.changed-java-files.outputs.added_files }}"
+            else
+                CHANGED_JAVA_FILES="${{ steps.changed-java-files.outputs.added_files }}"
+            fi
+        fi
+
+        # Convert comma-separated string to array for iteration
+        IFS=',' read -r -a java_files_array <<< "$CHANGED_JAVA_FILES"
+
+        # Create a directory for compiled classes
+        mkdir -p build/classes
+
+        for file_path in "${java_files_array[@]}"; do
+            if [ -f "$file_path" ]; then # Ensure it's a file
+                echo "--- Processing: $file_path ---"
+                
+                # Get the directory of the file (e.g., day1, day2)
+                file_dir=$(dirname "$file_path")
+                
+                # Get the base file name without extension (e.g., MyClass)
+                base_name=$(basename "$file_path" .java)
+                
+                # Create a build directory for this specific file, respecting its original path structure
+                mkdir -p "build/classes/$file_dir"
+                
+                # Compile the Java file
+                # -d specifies the output directory for compiled .class files
+                # -sourcepath allows locating other .java files if they are referenced
+                javac -d "build/classes" -sourcepath "." "$file_path"
+                
+                # Check if compilation was successful and if it contains a main method to run
+                if [ $? -eq 0 ]; then
+                    echo "Successfully compiled: $file_path"
+                    
+                    # Attempt to run the compiled class if it looks like a main class
+                    # This is a heuristic: it assumes main classes are directly in the dayX folders
+                    # Adjust 'package.' prefix if your classes are in packages (e.g., com.example.MyClass)
+                    class_name_for_run="${file_dir//\//.}.${base_name}" # Converts day1/MyClass to day1.MyClass
+
+                    # Check if the class file exists
+                    if [ -f "build/classes/$file_dir/$base_name.class" ]; then
+                        echo "Attempting to run: $class_name_for_run"
+                        # Run the compiled class from the 'build/classes' directory
+                        # Use -cp or --class-path to tell java where to find the classes
+                        java -cp "build/classes" "$class_name_for_run" || true # `|| true` to prevent job failure if a run fails
+
+                        echo "--- Finished running: $file_path ---"
+                    else
+                        echo "No runnable class file found for $file_path (maybe it's not a main class?)"
+                    fi
+                else
+                    echo "!!! Compilation failed for: $file_path !!!"
+                    exit 1 # Fail the job if compilation fails
+                fi
+            fi
+        done
